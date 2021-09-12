@@ -1,0 +1,7 @@
+matplotlib
+tensorflow>=2.6
+scipy
+pillow
+tensorflow_hub
+models/research
+opencv-contrib-python
