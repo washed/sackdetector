@@ -8,12 +8,10 @@ import numpy as np
 import scipy.misc
 import tensorflow as tf
 import tensorflow_hub as hub
-from cv2 import VideoCapture, imwrite
+from cv2 import VideoCapture, imwrite, CAP_PROP_BUFFERSIZE
 from PIL import Image, ImageDraw, ImageFont
 from six import BytesIO
 from six.moves.urllib.request import urlopen
-
-tf.get_logger().setLevel("ERROR")
 
 from object_detection.utils import label_map_util
 from object_detection.utils import ops as utils_ops
@@ -125,6 +123,7 @@ COCO17_HUMAN_POSE_KEYPOINTS = [
     (14, 16),
 ]
 
+tf.get_logger().setLevel("ERROR")
 matplotlib.use("TkAgg")
 
 PATH_TO_LABELS = "./models/research/object_detection/data/mscoco_label_map.pbtxt"
@@ -132,7 +131,7 @@ category_index = label_map_util.create_category_index_from_labelmap(
     PATH_TO_LABELS, use_display_name=True
 )
 
-model_display_name = "CenterNet HourGlass104 Keypoints 512x512"
+model_display_name = "SSD ResNet152 V1 FPN 1024x1024 (RetinaNet152)"
 model_handle = ALL_MODELS[model_display_name]
 
 print("Selected model:" + model_display_name)
@@ -142,16 +141,13 @@ print("loading model...")
 hub_model = hub.load(model_handle)
 print("model loaded!")
 
-
-selected_image = (
-    "Beach"  # @param ['Beach', 'Dogs', 'Naxos Taverna', 'Beatles', 'Phones', 'Birds']
-)
-flip_image_horizontally = False  # @param {type:"boolean"}
-convert_image_to_grayscale = False  # @param {type:"boolean"}
-
+flip_image_horizontally = False
+convert_image_to_grayscale = False
 
 # initialize the camera
-cam = VideoCapture(2)   # 0 -> index of camera
+cam = VideoCapture(0)  # 0 -> index of camera
+cam.set(CAP_PROP_BUFFERSIZE, 1)
+
 
 def yolo():
     img_state, img = cam.read()
@@ -159,8 +155,6 @@ def yolo():
         return
 
     imwrite("filename.jpg", img)
-
-    # image_path = IMAGES_FOR_TEST[selected_image]
     image_np = load_image_into_numpy_array("filename.jpg")
 
     # Flip horizontally
@@ -173,20 +167,13 @@ def yolo():
             np.uint8
         )
 
-    plt.figure(figsize=(24, 32))
-    plt.imshow(image_np[0])
-    plt.show()
-
     # running inference
     results = hub_model(image_np)
 
     # different object detection models have additional results
     # all of them are explained in the documentation
     result = {key: value.numpy() for key, value in results.items()}
-    print(result.keys())
 
-
-    label_id_offset = 0
     image_np_with_detections = image_np.copy()
 
     # Use keypoints if available in detections
@@ -195,16 +182,30 @@ def yolo():
         keypoints = result["detection_keypoints"][0]
         keypoint_scores = result["detection_keypoint_scores"][0]
 
+    if "detection_masks" in result:
+        # we need to convert np.arrays to tensors
+        detection_masks = tf.convert_to_tensor(result["detection_masks"][0])
+        detection_boxes = tf.convert_to_tensor(result["detection_boxes"][0])
+
+        # Reframe the the bbox mask to the image size.
+        detection_masks_reframed = utils_ops.reframe_box_masks_to_image_masks(
+            detection_masks, detection_boxes, image_np.shape[1], image_np.shape[2]
+        )
+        detection_masks_reframed = tf.cast(detection_masks_reframed > 0.5, tf.uint8)
+        result["detection_masks_reframed"] = detection_masks_reframed.numpy()
+
     viz_utils.visualize_boxes_and_labels_on_image_array(
         image_np_with_detections[0],
         result["detection_boxes"][0],
-        (result["detection_classes"][0] + label_id_offset).astype(int),
+        (result["detection_classes"][0]).astype(int),
         result["detection_scores"][0],
         category_index,
         use_normalized_coordinates=True,
         max_boxes_to_draw=200,
-        min_score_thresh=0.30,
+        min_score_thresh=0.2,
         agnostic_mode=False,
+        instance_masks=result.get("detection_masks_reframed", None),
+        line_thickness=8,
         keypoints=keypoints,
         keypoint_scores=keypoint_scores,
         keypoint_edges=COCO17_HUMAN_POSE_KEYPOINTS,
@@ -213,6 +214,7 @@ def yolo():
     plt.figure(figsize=(24, 32))
     plt.imshow(image_np_with_detections[0])
     plt.show()
+
 
 while True:
     yolo()
